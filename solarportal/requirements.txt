@@ -1,0 +1,5 @@
+aiohttp==2.2.5
+click==6.7
+beautifulsoup4==4.6.0
+voluptuous==0.10.5
+lxml==4.1.0
