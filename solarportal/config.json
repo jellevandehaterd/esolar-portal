@@ -1,0 +1,34 @@
+{
+  "name": "Solar Portal",
+  "version": "1",
+  "slug": "solar_portal",
+  "description": "Consume SAJ eSolar Portal API and send it to HA sensors using mqtt",
+  "startup": "system",
+  "boot": "auto",
+  "options": {
+    "url": "url",
+    "username": "str",
+    "password": "str",
+    "mqtt":{
+      "broker_url": "url",
+      "username": "str",
+      "password": "str",
+      "topic_prefix": "str"
+    },
+    "delay": 600,
+    "verbose": "v"
+  },
+  "schema": {
+    "url": "url",
+    "username": "str",
+    "password": "str",
+    "mqtt": {
+      "broker_url": "url",
+      "username": "str",
+      "password": "str",
+      "topic_prefix": "str"
+    },
+    "delay": "int(60,3600)",
+    "verbose": "str"
+  }
+}

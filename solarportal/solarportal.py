@@ -21,13 +21,13 @@ from aiohttp.hdrs import USER_AGENT
 from hbmqtt.client import MQTTClient, ConnectException
 from hbmqtt.mqtt.constants import QOS_0
 
-LOGGER_FORMAT = "[%(asctime)s] %(levelname)s - %(message)s"
-logging.basicConfig(format=LOGGER_FORMAT, datefmt='[%H:%M:%S]')
-logger = logging.getLogger(__name__)
+LOGGER_FORMAT = "%(asctime)-12s %(levelname)-8s %(message)s"
+logging.basicConfig(format=LOGGER_FORMAT, datefmt='%Y-%m-%d %H:%M:%S')
+logger = logging.getLogger('asyncio')
 
 MAJOR_VERSION = 0
-MINOR_VERSION = 1
-PATCH_VERSION = '0.dev0'
+MINOR_VERSION = 9
+PATCH_VERSION = '0.rc1'
 __short_version__ = '{}.{}'.format(MAJOR_VERSION, MINOR_VERSION)
 __version__ = '{}.{}'.format(__short_version__, PATCH_VERSION)
 
@@ -85,10 +85,10 @@ class ConfigValidation:
 cv = ConfigValidation()
 sys.modules[__name__] = cv
 
-REQUEST_TIMEOUT = 5  # In seconds; argument to asyncio.timeout
+REQUEST_TIMEOUT = 30  # In seconds; argument to asyncio.timeout
 SCAN_INTERVAL = timedelta(minutes=5)  # Timely, and doesn't suffocate the API
 
-SERVER_SOFTWARE = 'HomeAssistant/{0} aiohttp/{1} Python/{2[0]}.{2[1]}'.format(
+SERVER_SOFTWARE = 'SolarPortal/{0} aiohttp/{1} Python/{2[0]}.{2[1]}'.format(
     __version__, aiohttp.__version__, sys.version_info)
 
 DOMAIN = 'solarportal'
@@ -151,35 +151,32 @@ ATTR_TIMEZONE = "TimeZone"
 ATTR_ZIP_CODE = "ZipCode"
 ATTR_CB_EVENTS = "cbEvents"
 ATTR_EDT_EMAIL = "edtEmail"
+ATTR_IS_DUPLICATE_DIVICE = "isDuplicateDevice"
+ATTR_IS_DUPLICATE_NAME = "isDuplicateName"
+ATTR_IS_TIMER_ERROR = "isTimerError"
 ATTR_LATITUDE = "latitude"
 ATTR_LONGITUDE = "longitude"
-ATTR_NEW_Status = "new_Status"
+ATTR_NEW_STATUS = "new_Status"
+ATTR_OFFDAY = "offday"
 ATTR_REPORT_ENABLE = "reportEnable"
 ATTR_REPORT_SETTING = "reportSetting"
 ATTR_REPORT_TIME = "reportTime"
 
 USER_DATA = 'user-data'
+DEFAULT_DELAY = 600
 USER_ENDPOINT = 'srv/PortalData.svc/GetUserUidAndPath'
 USER_REQUEST_PAYLOAD = '{{"passkey":""}}'
+OVERVIEW = 'overview.html'
 PLANTS_ENDPOINT = 'srv/PortalData.svc/GetManaPlantsOfList'
-PLANTS_REQUEST_PAYLOAD = '{{"page":1,"pageSize":10,"paths":"{:s}","useruid":"{:s}","para":",,,,0,,0","flat": false}}'
+PLANTS_REQUEST_PAYLOAD = '{{"page":1,"pageSize":10,"paths":"{:s}","useruid":"{:s}","para":",,,,0,,0,0,0,0","flat": false}}'
 
-SENSOR_COMPONENT_NAME = 'solar'
-SENSOR_TYPES = {
-    'actual_power': {'name': 'Actual Power', 'unit_of_measurement': 'Watt', 'icon': 'mdi:weather-sunny',
-                     'component': 'sensor', 'value_from': ATTR_POWER_NOW, 'value': None},
-    'energy_today': {'name': 'Energy Today', 'unit_of_measurement': 'kWh', 'icon': 'mdi:flash',
-                     'component': 'sensor', 'value_from': ATTR_ENERGY_TODAY, 'value': None},
-    'energy_total': {'name': 'Energy Total', 'unit_of_measurement': 'kWh', 'icon': 'mdi:flash',
-                     'component': 'sensor', 'value_from': ATTR_ENERGY_TOTAL, 'value': None},
-    'income_today': {'name': 'Income Today', 'unit_of_measurement': 'EUR', 'icon': 'mdi:cash-100',
-                     'component': 'sensor',
-                     'value_from': lambda x: round(x[ATTR_ENERGY_TODAY] * x[ATTR_EXCHANGE_RATE_FOR_MONEY], 2),
-                     'value': None},
-    'income_total': {'name': 'Income Total', 'unit_of_measurement': 'EUR', 'icon': 'mdi:cash-100',
-                     'component': 'sensor',
-                     'value_from': lambda x: round(x[ATTR_ENERGY_TOTAL] * x[ATTR_EXCHANGE_RATE_FOR_MONEY], 2),
-                     'value': None},
+SOLAR_SENSOR = {
+    'status': ATTR_STATUS,
+    'actual_power': ATTR_POWER_NOW,
+    'energy_today': ATTR_ENERGY_TODAY,
+    'energy_total': ATTR_ENERGY_TOTAL,
+    'income_today': lambda x: round(x[ATTR_ENERGY_TODAY] * x[ATTR_EXCHANGE_RATE_FOR_MONEY], 2),
+    'income_total': lambda x: round(x[ATTR_ENERGY_TOTAL] * x[ATTR_EXCHANGE_RATE_FOR_MONEY], 2)
 }
 
 USER_SCHEMA_REQUEST = vol.Schema({
@@ -249,9 +246,13 @@ PLANTS_SCHEMA = vol.Schema({
     vol.Optional(ATTR_ZIP_CODE): cv.string,
     vol.Optional(ATTR_CB_EVENTS): cv.boolean,
     vol.Optional(ATTR_EDT_EMAIL): cv.email,
+    vol.Optional(ATTR_IS_DUPLICATE_DIVICE): cv.positive_int,
+    vol.Optional(ATTR_IS_DUPLICATE_NAME): cv.positive_int,
+    vol.Optional(ATTR_IS_TIMER_ERROR):  cv.positive_int,
     vol.Optional(ATTR_LATITUDE): cv.latitude,
     vol.Optional(ATTR_LONGITUDE): cv.longitude,
-    vol.Optional(ATTR_NEW_Status): cv.string,
+    vol.Optional(ATTR_NEW_STATUS): cv.string,
+    vol.Optional(ATTR_OFFDAY): cv.positive_int,
     vol.Optional(ATTR_REPORT_ENABLE): cv.positive_int,
     vol.Optional(ATTR_REPORT_SETTING): cv.positive_int,
     vol.Optional(ATTR_REPORT_TIME): cv.positive_int,
@@ -293,31 +294,32 @@ class SolarPortalRequestError(Exception):
 def async_portal_request(portal, method, url, **kwargs):
     """Perform a request to API endpoint, and parse the response."""
     schema = kwargs.pop('schema', None)
-
+    logger.debug("%s: %s", method, url)
     try:
-        logger.debug("%s: %s", method, url)
+
         with async_timeout.timeout(REQUEST_TIMEOUT, loop=portal.loop):
             resp = yield from portal.session.request(method, url, **kwargs)
 
         try:
-            resp.text = yield from resp.text()
+            resp.json = yield from resp.json()
             if schema:
-                resp.json = schema((yield from resp.json()))
-            else:
-                resp.json = yield from resp.json()
-        except aiohttp.client_exceptions.ClientResponseError as e:
-            if 'unexpected mimetype' not in e.message:
+                resp.json = schema(resp.json)
+
+        except aiohttp.client_exceptions.ClientResponseError as err:
+            if 'unexpected mimetype' not in err.message:
                 raise
 
+        resp.text = yield from resp.text()
         return resp
 
-    except (asyncio.TimeoutError, aiohttp.ClientError):
-        logger.error("Could not connect to SolarPortal API endpoint")
-    except ValueError:
-        logger.error("Received non-JSON data from SolarPortal API endpoint")
-    except vol.Invalid as err:
+    except (asyncio.TimeoutError, aiohttp.ClientError) as err:
+        logger.error("Could not connect to SolarPortal API endpoint: %s", err)
+    except (vol.SchemaError, vol.Invalid) as err:
         logger.error("Received unexpected JSON from SolarPortal"
                      "API endpoint: %s", err)
+    except ValueError:
+        logger.error("Received non-JSON data from SolarPortal API endpoint")
+
     raise SolarPortalRequestError
 
 
@@ -384,24 +386,24 @@ class SolarPortal:
     def async_login(self):
         """ Return the required .ASPXAUTH cookie """
 
-        def get_viewstate(response):
+        def get_viewstate(response=None):
             soup = BeautifulSoup(
                 response.text, "lxml",
                 from_encoding=response.headers.get('charset')
             )
             return soup.find("input", {"id": "__VIEWSTATE"}).attrs['value']
 
-        payload = {}
-
         try:
             logger.debug("Requesting login page")
-            payload[LOGIN_FIELDS['username_input']] = self.config['default']['username']
-            payload[LOGIN_FIELDS['password_input']] = self.config['default']['password']
-            payload[LOGIN_FIELDS['remember_me_input']] = 'on'
-            payload[LOGIN_FIELDS['login_value_input']] = 'Login'
-            payload[LOGIN_FIELDS['viewstate_input']] = get_viewstate(
-                (yield from async_portal_request(self, 'get', self.url, params=self.params))
-            )
+            payload = {
+                LOGIN_FIELDS['username_input']: self.config['default']['username'],
+                LOGIN_FIELDS['password_input']: self.config['default']['password'],
+                LOGIN_FIELDS['remember_me_input']: 'on',
+                LOGIN_FIELDS['login_value_input']: 'Login',
+                LOGIN_FIELDS['viewstate_input']: get_viewstate(
+                    (yield from async_portal_request(self, 'get', self.url, params=self.params))
+                )
+            }
 
             logger.debug("Try Login")
             # Payload to be send as Content-Type : application/x-www-form-urlencoded
@@ -422,6 +424,9 @@ class SolarPortal:
                 schema=USER_SCHEMA_RESPONSE
             )
             logger.debug("Userdata received")
+
+            self.loop.call_later(delay=30, callback=self.session_refresh)
+
             self.user_data = resp.json['d']['d_string']
 
         except SolarPortalRequestError:
@@ -429,19 +434,57 @@ class SolarPortal:
         finally:
             logger.info("Login done")
 
-    def refresh(self, delay=600):
+    def session_refresh(self):
+        for cookie in self.session.cookie_jar:
+            if 'paaswaaaw' in cookie.key and 'expires' in cookie:
+                if cookie['expires']:
+                    logger.info(
+                        "Session valid until %s",
+                        datetime.strptime(cookie['expires'], '%a, %d-%b-%Y %H:%M:%S %Z').strftime('%H:%M')
+                    )
+        asyncio.ensure_future(self.async_session_refresh())
+
+    @asyncio.coroutine
+    def async_session_refresh(self):
+        logger.debug('Async session refresh')
+        try:
+            url = '{url}{endpoint}'.format(url=self.url, endpoint=OVERVIEW)
+            yield from async_portal_request(self, 'get', url, params=self.params)
+
+        except SolarPortalRequestError as err:
+            logger.error("SolarPortal API endpoint error: %s", err)
+            raise PlatformNotReady
+
+        expiration = now = datetime.now()
+        for cookie in self.session.cookie_jar:
+            if 'paaswaaaw' in cookie.key:
+                expiration = datetime.strptime(cookie['expires'], '%a, %d-%b-%Y %H:%M:%S %Z')
+
+        logger.debug('Session expiring at %s', expiration.strftime('%H:%M'))
+        if expiration.timestamp() > now.timestamp():
+            # Scheduling refresh 30 min before session expiration
+            expiration -= timedelta(minutes=30)
+            logger.info("Scheduling session refresh at %s", expiration.strftime('%H:%M'))
+            when = self.loop.time() + (expiration.timestamp() - now.timestamp())
+            self.loop.call_at(when=when, callback=self.session_refresh)
+        else:
+            logger.warning("Session expired at %s, login required", expiration.strftime('%H:%M'))
+            yield from self.async_login()
+
+    def refresh(self, delay=None):
         asyncio.ensure_future(self.async_refresh(delay))
 
     @asyncio.coroutine
-    def async_refresh(self, delay=600):
-        if 'delay' in self.config['default']:
-            delay = int(self.config['default']['delay'])
-
+    def async_refresh(self, delay=None):
         if not self.user_data:
             self.loop.call_later(delay=10, callback=self.refresh)
             return
 
-        when = ceil_dt(datetime.now(), timedelta(seconds=delay))
+        if delay is None:
+            delay = DEFAULT_DELAY
+            if 'delay' in self.config['default']:
+                delay = int(self.config['default']['delay'])
+
         try:
             logger.info('Updating data')
             future = asyncio.ensure_future(
@@ -468,43 +511,41 @@ class SolarPortal:
 
         except IndexError:
             logger.warning("Userdata not set, rescheduling refresh task in %s seconds", delay)
-        except SolarPortalRequestError:
+        except SolarPortalRequestError as err:
+            logger.error("SolarPortal API endpoint error: %s", err)
             raise PlatformNotReady
-        logger.info("rescheduling refresh at %s", when.strftime('%H:%M'))
-        when = self.loop.time() + (when.timestamp() - datetime.now().timestamp())
+
+        _when = ceil_dt(datetime.now(), timedelta(seconds=delay))
+        logger.info("Scheduling refresh at %s", _when.strftime('%H:%M'))
+        when = self.loop.time() + (_when.timestamp() - datetime.now().timestamp())
         self.loop.call_at(when=when, callback=self.refresh)
 
     @asyncio.coroutine
     def async_publish(self, schema):
-        client = MQTTClient()
+        client = MQTTClient(client_id=os.uname().nodename)
         try:
             mqtt = self.config['mqtt']
-            logger.info('mqtt client connecting to: %s', mqtt['broker_url'])
+            logger.debug('mqtt client connecting to: %s', mqtt['broker_url'])
             url = mqtt['broker_url'].format(username=mqtt['username'], password=mqtt['password'])
 
             yield from client.connect(url)
+            topic = "{prefix}/{component}".format(
+                prefix=mqtt['topic_prefix'],
+                component='data'
+            )
+            data = copy.copy(SOLAR_SENSOR)
             data_set = schema(self.data['d']['dp'][0])
-            for component, sensor in SENSOR_TYPES.items():
-                data = copy.copy(sensor)
-                key = data.pop('value_from')
-                logger.debug("creating message for sensor, %s", data)
-                data['value'] = key(self.data['d']['dp'][0]) if callable(key) else data_set[key]
+            for key, value_from in data.items():
+                data[key] = value_from(self.data['d']['dp'][0]) if callable(value_from) else data_set[value_from]
 
-                topic = "{prefix}/{component}".format(
-                    prefix=mqtt['topic_prefix'],
-                    component=component
-                )
-
-                logger.debug("topic: %s, message: %s", topic, data)
-                message = json.dumps(data).encode()
-                yield from client.publish(topic, message, qos=QOS_0, retain=True)
-
-            logger.info("%s messages published", len(data_set))
+            message = json.dumps(data).encode()
+            yield from client.publish(topic, message, qos=QOS_0, retain=True)
+            logger.info("Published at topic %s: %s", topic, message)
 
         except ConnectException as ce:
             logger.error("Connection failed: %s" % ce)
         finally:
-            logger.info('mqtt client disconnecting')
+            logger.debug('mqtt client disconnecting')
             yield from client.disconnect()
 
     @staticmethod
@@ -530,10 +571,11 @@ def ceil_dt(dt, delta):
 
 @click.command()
 @click.argument('configfile', type=click.Path(exists=True))
-@click.option('--delay', default=False)
+@click.option('--delay', default=None)
 @click.option('--verbose', type=click.Choice(['v', 'vv', 'vvv']))
 def main(configfile, verbose, delay):
     logger.setLevel(logging.INFO)
+    logger.info("Version: %s", __version__)
     logger.info('Reading config from %s', configfile)
     config = read_config(configfile)
 

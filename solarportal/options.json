@@ -1,0 +1,13 @@
+{
+  "url": "https://fesolar.saj-electric.com/?node=1&lang=en-us&jump=1",
+  "username": "jellehaterd",
+  "password": "J5u)Y2hrRWk8Yn",
+  "mqtt":{
+    "broker_url": "mqtt://{username}:{password}@hassio.local:1883",
+    "username": "solarpower",
+    "password": "fly-clint-pert-bel-scrim",
+    "topic_prefix": "home/solar"
+  },
+  "verbose": "vv",
+  "delay": 600
+}
